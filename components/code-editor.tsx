@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useRef, useState } from 'react'
+import React, { useRef, useState, useCallback } from 'react'
 import { Folder, File, ChevronDown, ChevronRight, Sun, Moon, FolderOpen, Download, Plus, Trash, Edit } from 'lucide-react'
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -8,9 +8,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import JSZip from 'jszip'
-import { saveAs } from 'file-saver'
 import dynamic from 'next/dynamic'
+import { useFileSystem, FileStructure } from '@/components/hooks/useFileSystem'
 
 export function Spinner() {
   return (
@@ -27,40 +26,23 @@ const MonacoEditor = dynamic(() => import('@monaco-editor/react'), {
   loading: () => <Spinner />,
 })
 
-interface FileStructure {
-  name: string
-  type: 'file' | 'folder'
-  children?: FileStructure[]
-  content?: string
-  path: string
-}
-
-const initialFileStructure: FileStructure[] = [
-  { 
-    name: 'Documents', 
-    type: 'folder', 
-    path: 'Documents',
-    children: [
-      { name: 'README.md', type: 'file', content: '# Welcome to Editor0\n\nYou can download the project as a zip file by clicking the download button on the left.\n\nYou can also select a folder to open in the editor by clicking the select folder button.\n\nClick on a file on the left to start editing it.\n\nEnjoy!', path: 'Documents/README.md' },
-    ],
-  },
-]
-
 export function CodeEditor() {
-  const [fileStructure, setFileStructure] = useState<FileStructure[]>(initialFileStructure)
+  const { fileStructure, setFileStructure, downloadFiles, readFiles, createNewItem, deleteItem, renameItem } = useFileSystem()
   const [selectedFile, setSelectedFile] = useState<FileStructure | null>(null)
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
   const [isDarkMode, setIsDarkMode] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: FileStructure | null } | null>(null)
-  const [isNewItemDialogOpen, setIsNewItemDialogOpen] = useState(false)
-  const [newItemName, setNewItemName] = useState('')
-  const [newItemType, setNewItemType] = useState<'file' | 'folder'>('file')
-  const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false)
-  const [renameItemName, setRenameItemName] = useState('')
+  const [dialogState, setDialogState] = useState({
+    isNewItemDialogOpen: false,
+    isRenameDialogOpen: false,
+    newItemName: '',
+    newItemType: 'file' as 'file' | 'folder',
+    renameItemName: '',
+  })
   const [contextItem, setContextItem] = useState<FileStructure | null>(null)
 
-  const toggleFolder = (folderName: string) => {
+  const toggleFolder = useCallback((folderName: string) => {
     setExpandedFolders((prev) => {
       const newSet = new Set(prev)
       if (newSet.has(folderName)) {
@@ -70,176 +52,80 @@ export function CodeEditor() {
       }
       return newSet
     })
-  }
+  }, [])
 
-  const downloadFiles = async () => {
-    const zip = new JSZip()
-
-    const addFilesToZip = (files: FileStructure[], folder: JSZip) => {
-      files.forEach((file) => {
-        if (file.type === 'folder' && file.children) {
-          const newFolder = folder.folder(file.name)
-          if (newFolder) {
-            addFilesToZip(file.children, newFolder)
-          }
-        } else if (file.type === 'file' && file.content) {
-          folder.file(file.name, file.content)
-        }
-      })
-    }
-
-    addFilesToZip(fileStructure, zip)
-
-    const content = await zip.generateAsync({ type: 'blob' })
-    saveAs(content, 'project.zip')
-  }
-
-  const selectFolder = () => {
+  const selectFolder = useCallback(() => {
     if (fileInputRef.current) {
       fileInputRef.current.click()
     }
-  }
+  }, [])
 
-  const handleFileInputChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileInputChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
     if (files) {
-      const newFileStructure = await readFiles(files)
-      setFileStructure(newFileStructure)
+      await readFiles(files)
     }
-  }
+  }, [readFiles])
 
-  const readFiles = async (fileList: FileList) => {
-    const files: FileStructure[] = []
-
-    for (const file of Array.from(fileList)) {
-      const pathParts = file.webkitRelativePath.split('/')
-      let currentLevel = files
-      let currentPath = ''
-
-      for (let i = 0; i < pathParts.length; i++) {
-        const part = pathParts[i]
-        currentPath += (currentPath ? '/' : '') + part
-        if (i === pathParts.length - 1) {
-          const content = await file.text()
-          currentLevel.push({ name: part, type: 'file', content, path: currentPath })
-        } else {
-          let folder = currentLevel.find(f => f.name === part && f.type === 'folder')
-          if (!folder) {
-            folder = { name: part, type: 'folder', children: [], path: currentPath }
-            currentLevel.push(folder)
-          }
-          currentLevel = folder.children!
-        }
-      }
-    }
-
-    return files
-  }
-
-  const handleContextMenu = (event: React.MouseEvent, item: FileStructure) => {
+  const handleContextMenu = useCallback((event: React.MouseEvent, item: FileStructure) => {
     event.preventDefault()
     setContextMenu({ x: event.clientX, y: event.clientY, item })
     setContextItem(item)
-  }
+  }, [])
 
-  const closeContextMenu = () => {
+  const closeContextMenu = useCallback(() => {
     setContextMenu(null)
-  }
+  }, [])
 
-  const handleNewItem = (type: 'file' | 'folder') => {
-    setNewItemType(type)
-    setIsNewItemDialogOpen(true)
+  const handleNewItem = useCallback((type: 'file' | 'folder') => {
+    setDialogState(prev => ({
+      ...prev,
+      isNewItemDialogOpen: true,
+      newItemType: type,
+    }))
     closeContextMenu()
-  }
+  }, [closeContextMenu])
 
-  const createNewItem = () => {
-    if (newItemName && contextItem) {
-      const newItem: FileStructure = {
-        name: newItemName,
-        type: newItemType,
-        path: `${contextItem.path}/${newItemName}`,
-        ...(newItemType === 'folder' ? { children: [] } : { content: '' }),
-      }
-
-      const updateFileStructure = (items: FileStructure[]): FileStructure[] => {
-        return items.map(item => {
-          if (item.path === contextItem?.path) {
-            if (item.type === 'folder') {
-              return { ...item, children: [...(item.children || []), newItem] }
-            }
-          } else if (item.type === 'folder' && item.children) {
-            return { ...item, children: updateFileStructure(item.children) }
-          }
-          return item
-        })
-      }
-
-      setFileStructure(updateFileStructure(fileStructure))
-      setIsNewItemDialogOpen(false)
-      setNewItemName('')
+  const handleCreateNewItem = useCallback(() => {
+    if (dialogState.newItemName && contextItem) {
+      createNewItem(dialogState.newItemName, dialogState.newItemType, contextItem.path)
+      setDialogState(prev => ({
+        ...prev,
+        isNewItemDialogOpen: false,
+        newItemName: '',
+      }))
     }
-  }
+  }, [createNewItem, contextItem, dialogState.newItemName, dialogState.newItemType])
 
-
-  const deleteItem = (item: FileStructure | null, items: FileStructure[]): FileStructure[] => {
-    if (!item?.path) {
-      return items;
-    }
-  
-    const parts = item.path.split('/');
-    if (parts.length === 1) {
-      return items.filter(i => i.path !== item.path);
-    }
-  
-    const parentPath = parts.slice(0, -1).join('/');
-    const itemName = parts[parts.length - 1];
-  
-    return items.map(i => {
-      if (i.path === parentPath && i.type === 'folder' && i.children) {
-        return { ...i, children: i.children.filter(c => c.name !== itemName) };
-      } else if (i.type === 'folder' && i.children) {
-        return { ...i, children: deleteItem(item, i.children) };
-      }
-      return i;
-    });
-  };
-
-  const handleDeleteItem = () => {
+  const handleDeleteItem = useCallback(() => {
     if (contextItem) {
-      const newFileStructure = deleteItem(contextItem, fileStructure)
-      console.log(newFileStructure)
-      setFileStructure(newFileStructure)
+      deleteItem(contextItem)
     }
     closeContextMenu()
-  }
+  }, [deleteItem, contextItem, closeContextMenu])
 
-  const handleRenameItem = () => {
+  const handleRenameItem = useCallback(() => {
     if (contextMenu?.item) {
-      setRenameItemName(contextMenu.item.name)
-      setIsRenameDialogOpen(true)
+      setDialogState(prev => ({
+        ...prev,
+        isRenameDialogOpen: true,
+        renameItemName: contextMenu?.item?.name ?? '',
+      }))
     }
-  }
+  }, [contextMenu])
 
-  const renameItem = () => {
-    if (renameItemName && contextItem) {
-      const renameItem = (items: FileStructure[]): FileStructure[] => {
-        return items.map(item => {
-          if (item.path === contextItem.path) {
-            return { ...item, name: renameItemName }
-          } else if (item.type === 'folder' && item.children) {
-            return { ...item, children: renameItem(item.children) }
-          }
-          return item
-        })
-      }
-
-      setFileStructure(renameItem(fileStructure))
-      setIsRenameDialogOpen(false)
-      setRenameItemName('')
+  const handleRenameConfirm = useCallback(() => {
+    if (dialogState.renameItemName && contextItem) {
+      renameItem(contextItem, dialogState.renameItemName)
+      setDialogState(prev => ({
+        ...prev,
+        isRenameDialogOpen: false,
+        renameItemName: '',
+      }))
     }
-  }
+  }, [renameItem, contextItem, dialogState.renameItemName])
 
-  const renderFileStructure = (items: FileStructure[], depth = 0) => {
+  const renderFileStructure = useCallback((items: FileStructure[], depth = 0) => {
     items.sort((a, b) => {
       if (a.type === b.type) {
         return a.name.localeCompare(b.name)
@@ -278,7 +164,7 @@ export function CodeEditor() {
       )}
       </React.Fragment>
     ))
-  }
+  }, [expandedFolders, handleContextMenu, toggleFolder])
 
   return (
     <div className={`flex justify-center items-center min-h-screen ${isDarkMode ? 'bg-neutral-800' : 'bg-gray-100'}`} onClick={closeContextMenu}>
@@ -387,10 +273,10 @@ export function CodeEditor() {
           </DropdownMenuContent>
         </DropdownMenu>
       )}
-      <Dialog open={isNewItemDialogOpen} onOpenChange={setIsNewItemDialogOpen}>
+      <Dialog open={dialogState.isNewItemDialogOpen} onOpenChange={(open) => setDialogState(prev => ({ ...prev, isNewItemDialogOpen: open }))}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create New {newItemType === 'file' ? 'File' : 'Folder'}</DialogTitle>
+            <DialogTitle>Create New {dialogState.newItemType === 'file' ? 'File' : 'Folder'}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid grid-cols-4 items-center gap-4">
@@ -400,18 +286,18 @@ export function CodeEditor() {
               <Input
                 autoComplete="off"
                 id="name"
-                value={newItemName}
-                onChange={(e) => setNewItemName(e.target.value)}
+                value={dialogState.newItemName}
+                onChange={(e) => setDialogState(prev => ({ ...prev, newItemName: e.target.value }))}
                 className="col-span-3"
               />
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={createNewItem}>Create</Button>
+            <Button onClick={handleCreateNewItem}>Create</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={isRenameDialogOpen} onOpenChange={setIsRenameDialogOpen}>
+      <Dialog open={dialogState.isRenameDialogOpen} onOpenChange={(open) => setDialogState(prev => ({ ...prev, isRenameDialogOpen: open }))}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Rename Item</DialogTitle>
@@ -423,14 +309,14 @@ export function CodeEditor() {
               </Label>
               <Input
                 id="rename"
-                value={renameItemName}
-                onChange={(e) => setRenameItemName(e.target.value)}
+                value={dialogState.renameItemName}
+                onChange={(e) => setDialogState(prev => ({ ...prev, renameItemName: e.target.value }))}
                 className="col-span-3"
               />
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={renameItem}>Rename</Button>
+            <Button onClick={handleRenameConfirm}>Rename</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
